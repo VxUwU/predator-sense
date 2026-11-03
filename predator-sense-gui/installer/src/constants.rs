@@ -123,6 +123,10 @@ pub(crate) mod command {
 
 pub(crate) mod hardware {
     pub const PREDATOR_KEY_CODE: u16 = 425;
+    /// Chassis whose PredatorSense key reports another code than 425 on the
+    /// keyboard device, as `(DMI product word, code)`. The PHN16-71 sends
+    /// `KEY_PROG1` (148, scancode 245) and nothing else.
+    pub const PREDATOR_KEY_CODE_BY_MODEL: &[(&str, u16)] = &[("PHN16-71", 148)];
     pub const INPUT_EVENT_KEY: u16 = 1;
     pub const INPUT_VALUE_PRESS: i32 = 1;
     pub const INPUT_DEVICE_NAMES: [&str; 2] = ["Acer WMI hotkeys", "AT Translated Set 2 keyboard"];

@@ -306,6 +306,9 @@ pub(crate) fn run() -> AppResult {
     let config = load_config(&config_path);
     let mut logger = Logger::from_config(&config, &home);
     logger.info(format!("Daemon Rust iniciado, PID {}", std::process::id()));
+    let model_key_code = model_predator_key_code(
+        &fs::read_to_string(path::PRODUCT_NAME).unwrap_or_default(),
+    );
 
     // Before the lighting, and before any device is opened.
     //
@@ -551,12 +554,12 @@ pub(crate) fn run() -> AppResult {
             match read_input_event(&mut devices[index].1) {
                 Ok(event)
                     if event.type_ == hardware::INPUT_EVENT_KEY
-                        && event.code == hardware::PREDATOR_KEY_CODE
+                        && is_predator_key(event.code, model_key_code)
                         && event.value == hardware::INPUT_VALUE_PRESS =>
                 {
                     logger.debug(format!(
                         "Keycode {} em {}",
-                        hardware::PREDATOR_KEY_CODE,
+                        event.code,
                         devices[index].0.display()
                     ));
                     if last_activation.elapsed() > Duration::from_secs(timing::HOTKEY_DEBOUNCE_SECS)
@@ -1394,6 +1397,24 @@ fn activate_app(logger: &mut Logger) {
     }
 }
 
+/// The extra key code this chassis reports for the PredatorSense key, if its
+/// DMI product name has an entry in [`hardware::PREDATOR_KEY_CODE_BY_MODEL`],
+/// compared as whole words like the other model gates here.
+fn model_predator_key_code(product: &str) -> Option<u16> {
+    product.split_whitespace().find_map(|part| {
+        hardware::PREDATOR_KEY_CODE_BY_MODEL
+            .iter()
+            .find(|(model, _)| part.eq_ignore_ascii_case(model))
+            .map(|&(_, code)| code)
+    })
+}
+
+/// The common code stays valid on every chassis; the model's own is added to
+/// it rather than replacing it.
+fn is_predator_key(code: u16, model_code: Option<u16>) -> bool {
+    code == hardware::PREDATOR_KEY_CODE || model_code == Some(code)
+}
+
 fn ensure_display(command: &mut Command) {
     if std::env::var_os("DISPLAY").is_some() || std::env::var_os("WAYLAND_DISPLAY").is_some() {
         return;
@@ -1880,6 +1901,24 @@ fn resumed_since(previous: f64, current: f64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The PHN16-71 sends KEY_PROG1 (148), not 425, so the app never opened.
+    /// The other Predator chassis must keep ignoring 148, which is an ordinary
+    /// program key on them.
+    #[test]
+    fn the_phn16_71_predator_key_is_recognised_and_other_models_keep_425_only() {
+        let phn = model_predator_key_code("Predator PHN16-71\n");
+        assert_eq!(phn, Some(148));
+        assert!(is_predator_key(148, phn));
+        assert!(is_predator_key(425, phn), "the common code still works");
+        assert!(!is_predator_key(147, phn));
+
+        let other = model_predator_key_code("Predator PH315-54");
+        assert_eq!(other, None);
+        assert!(is_predator_key(425, other));
+        assert!(!is_predator_key(148, other), "an ordinary key there");
+        assert_eq!(model_predator_key_code("Predator PHN16-71X"), None, "whole words");
+    }
 
     #[test]
     fn only_the_compositor_socket_counts_as_a_wayland_display() {
