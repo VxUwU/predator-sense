@@ -192,6 +192,39 @@ pub fn curve_input_temp(cpu: Option<f64>, gpu: Option<f64>) -> Option<f64> {
     }
 }
 
+/// How far a rising reading moves the smoothed temperature per tick. A laptop
+/// CPU boosts to 65-70 C for a second or two when something wakes up, and the
+/// curve used to answer that with a full fan ramp that was gone again before
+/// the heatsink had warmed. A third per tick lets a real sustained load reach
+/// its step within about fifteen seconds while a short spike barely moves it.
+const SMOOTH_RISE_WEIGHT: f64 = 0.3;
+
+/// How far a falling reading moves it. Faster than the rise, so the fans never
+/// hold a high speed for long after the heat has gone.
+const SMOOTH_FALL_WEIGHT: f64 = 0.5;
+
+/// From here the raw temperature is used as it is. Smoothing is for noise, not
+/// for a machine that is actually hot, and the top step must not arrive late.
+const SMOOTH_BYPASS_C: f64 = 85.0;
+
+/// The temperature the software curve answers to: `raw`, smoothed against the
+/// value from the previous tick. `None` is the first tick, which has nothing
+/// to smooth against.
+pub fn smooth_temp(previous: Option<f64>, raw: f64) -> f64 {
+    let Some(previous) = previous else {
+        return raw;
+    };
+    if raw >= SMOOTH_BYPASS_C {
+        return raw;
+    }
+    let weight = if raw > previous {
+        SMOOTH_RISE_WEIGHT
+    } else {
+        SMOOTH_FALL_WEIGHT
+    };
+    previous + (raw - previous) * weight
+}
+
 /// The 6 fixed temperature breakpoints (<45/<55/<65/<75/<85/85+ °C) the
 /// software auto-curve steps through. Not user-editable, only the percent
 /// each step applies is (see `config::fan_curve_points`, issue #59).
@@ -665,6 +698,49 @@ pub fn write_for(target: CurveAction, pwm_available: bool) -> Option<FanWrite> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The case this exists for, measured on a PHN16-71: an idle CPU at 48 C
+    /// jumps to 71 C for one tick and back. Raw, that reads as the 65-75 C
+    /// step; smoothed it stays in the step the idle temperature was in.
+    #[test]
+    fn a_one_tick_spike_does_not_reach_the_step_it_peaked_in() {
+        let steps = DEFAULT_FAN_CURVE;
+        let idle = fan_curve_pct(48.0, &steps);
+        let spike = smooth_temp(Some(48.0), 71.0);
+        assert!(fan_curve_pct(71.0, &steps) > fan_curve_pct(spike, &steps));
+        assert!(
+            fan_curve_pct(spike, &steps) <= fan_curve_pct(55.0, &steps),
+            "the spike moved the curve by more than one step: {spike}"
+        );
+        let after = smooth_temp(Some(spike), 48.0);
+        assert!(fan_curve_pct(after, &steps) <= fan_curve_pct(55.0, &steps));
+        assert!(idle <= fan_curve_pct(after, &steps));
+    }
+
+    #[test]
+    fn a_sustained_load_still_reaches_its_temperature() {
+        let mut smoothed = Some(48.0);
+        for _ in 0..10 {
+            smoothed = Some(smooth_temp(smoothed, 71.0));
+        }
+        let reached = smoothed.expect("set above");
+        assert!((71.0 - reached).abs() < 1.0, "only reached {reached}");
+    }
+
+    #[test]
+    fn a_falling_temperature_is_followed_faster_than_a_rising_one() {
+        let up = smooth_temp(Some(50.0), 60.0) - 50.0;
+        let down = 60.0 - smooth_temp(Some(60.0), 50.0);
+        assert!(down > up, "fell {down}, rose {up}");
+    }
+
+    #[test]
+    fn a_hot_machine_is_never_smoothed_and_the_first_tick_has_nothing_to_smooth() {
+        assert_eq!(smooth_temp(Some(50.0), 85.0), 85.0);
+        assert_eq!(smooth_temp(Some(50.0), 92.5), 92.5);
+        assert_eq!(smooth_temp(None, 61.0), 61.0);
+        assert_eq!(smooth_temp(Some(60.0), 60.0), 60.0, "steady stays put");
+    }
 
     #[test]
     fn default_curve_matches_the_original_hardcoded_steps() {

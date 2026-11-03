@@ -627,6 +627,10 @@ fn build_main_ui(app: &adw::Application, window: &gtk::ApplicationWindow) {
         // like any other helper call. That is why it is a tick of its own
         // rather than a value fetched before the timer starts.
         let seeded = Rc::new(Cell::new(false));
+        // The curve's temperature from the previous tick, for
+        // `fan::smooth_temp`. Without it a one-second CPU boost to 70 C
+        // ramped the fans for a few seconds on every tick that caught it.
+        let smoothed_temp = Rc::new(Cell::new(None::<f64>));
         glib::timeout_add_seconds_local(crate::hardware::fan::RECONCILE_TICK_S, move || {
             use crate::hardware::fan::{CurveAction, FanState};
 
@@ -706,7 +710,11 @@ fn build_main_ui(app: &adw::Application, window: &gtk::ApplicationWindow) {
             // response at all. See fan::curve_input_temp for why this
             // stays one speed for both fans.
             let (cpu, gpu) = sensors::read_critical_temps();
-            let temp = crate::hardware::fan::curve_input_temp(cpu, gpu);
+            let temp = crate::hardware::fan::curve_input_temp(cpu, gpu).map(|raw| {
+                let smoothed = crate::hardware::fan::smooth_temp(smoothed_temp.get(), raw);
+                smoothed_temp.set(Some(smoothed));
+                smoothed
+            });
             let applied = fan_state.get();
             let target = crate::hardware::fan::plan_target(
                 plan,
