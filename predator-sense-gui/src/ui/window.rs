@@ -694,6 +694,7 @@ fn build_main_ui(app: &adw::Application, window: &gtk::ApplicationWindow) {
                     move || crate::hardware::fan::observe_fan_state(pwm),
                     move |observed| {
                         applying_done.set(false);
+                        crate::hardware::fan::record_fan_state(observed);
                         state.set(observed);
                     },
                 );
@@ -788,11 +789,13 @@ fn build_main_ui(app: &adw::Application, window: &gtk::ApplicationWindow) {
                         // firmware has them" as far as needs_write cares.
                         Ok(()) => {
                             failed.set(0);
-                            state.set(match intended {
+                            let now = match intended {
                                 CurveAction::Firmware => FanState::Firmware,
                                 CurveAction::Manual(percent) => FanState::Manual(percent),
                                 CurveAction::Hold => FanState::Unknown,
-                            });
+                            };
+                            crate::hardware::fan::record_fan_state(now);
+                            state.set(now);
                         }
                         Err(error) => {
                             failed.set(failed.get().saturating_add(1));

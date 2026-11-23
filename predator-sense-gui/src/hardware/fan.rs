@@ -308,6 +308,60 @@ pub enum FanState {
     Manual(u8),
 }
 
+/// Whether this process is holding the fans in manual mode, so that something
+/// has to give them back on exit. Process-wide because the curve's state
+/// lives in a timer closure the shutdown handler cannot reach.
+static HOLDING_FANS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether a fan state leaves the fans under manual (PWM) control. `Unknown`
+/// is not manual: a failed write says nothing, so it leaves the flag alone
+/// (see [`record_fan_state`]).
+fn holds_fans(state: FanState) -> Option<bool> {
+    match state {
+        FanState::Manual(_) => Some(true),
+        FanState::Firmware => Some(false),
+        FanState::Unknown => None,
+    }
+}
+
+/// Remember what the curve last managed to do to the fans.
+pub fn record_fan_state(state: FanState) {
+    if let Some(held) = holds_fans(state) {
+        HOLDING_FANS.store(held, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// Hand the fans back to the firmware if this process took them. Call when the
+/// app really exits.
+///
+/// While the curve is on, the fans sit in manual mode (`pwm_enable=1`) at the
+/// last percentage written. Nothing else restores the firmware's own control,
+/// so quitting from the tray, `kill` or a logout left the fans at that fixed
+/// speed, possibly 25%, while the CPU went on to heat up. A crash still skips
+/// this; a reboot restores the firmware.
+///
+/// `Ok(true)` when it handed them back, `Ok(false)` when it never had them.
+pub fn release_fans_on_exit() -> Result<bool, String> {
+    release_held_fans(&HOLDING_FANS, set_pwm_auto)
+}
+
+fn release_held_fans(
+    flag: &std::sync::atomic::AtomicBool,
+    release: impl FnOnce() -> Result<(), String>,
+) -> Result<bool, String> {
+    if !flag.swap(false, std::sync::atomic::Ordering::Relaxed) {
+        return Ok(false);
+    }
+    match release() {
+        Ok(()) => Ok(true),
+        Err(error) => {
+            // Still held: a retry by the caller must not be skipped.
+            flag.store(true, std::sync::atomic::Ordering::Relaxed);
+            Err(error)
+        }
+    }
+}
+
 /// Whether `action` still needs to reach the hardware.
 ///
 /// The curve runs every few seconds and its answer rarely changes, so without
@@ -698,6 +752,43 @@ pub fn write_for(target: CurveAction, pwm_available: bool) -> Option<FanWrite> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    #[test]
+    fn only_a_manual_write_means_the_fans_have_to_be_given_back() {
+        assert_eq!(holds_fans(FanState::Manual(25)), Some(true));
+        assert_eq!(holds_fans(FanState::Firmware), Some(false));
+        assert_eq!(holds_fans(FanState::Unknown), None, "a failed write says nothing");
+    }
+
+    #[test]
+    fn exit_gives_the_fans_back_once_and_only_if_they_were_taken() {
+        let held = AtomicBool::new(true);
+        let mut calls = 0;
+        assert_eq!(
+            release_held_fans(&held, || {
+                calls += 1;
+                Ok(())
+            }),
+            Ok(true)
+        );
+        assert_eq!(calls, 1);
+        assert!(!held.load(Ordering::Relaxed));
+
+        let free = AtomicBool::new(false);
+        assert_eq!(
+            release_held_fans(&free, || panic!("never took the fans, nothing to give back")),
+            Ok(false)
+        );
+    }
+
+    #[test]
+    fn a_failed_release_keeps_the_fans_marked_as_held() {
+        let held = AtomicBool::new(true);
+        let result = release_held_fans(&held, || Err("helper unreachable".to_string()));
+        assert_eq!(result, Err("helper unreachable".to_string()));
+        assert!(held.load(Ordering::Relaxed), "a later attempt must still run");
+    }
 
     /// The case this exists for, measured on a PHN16-71: an idle CPU at 48 C
     /// jumps to 71 C for one tick and back. Raw, that reads as the 65-75 C

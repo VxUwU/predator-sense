@@ -186,6 +186,16 @@ fn main() {
     // for as long as the audio device keeps producing data, i.e. forever.
     app.connect_shutdown(|_| {
         hardware::audio_sync::stop();
+        // The software curve leaves the fans in manual mode at its last speed.
+        // Hand them back to the firmware, or they stay there after the app is
+        // gone.
+        match hardware::fan::release_fans_on_exit() {
+            Ok(true) => hardware::applog::info("fan: returned to firmware control on exit"),
+            Ok(false) => {}
+            Err(error) => hardware::applog::error(&format!(
+                "fan: could not return the fans to firmware on exit: {error}"
+            )),
+        }
     });
 
     app.connect_activate(|app| {
