@@ -16,6 +16,7 @@ kernel 7.1.5, KDE Plasma on Wayland.
 | 2026-11-03 | `e22acf1` | The hotkey service looks for a `wayland-N` socket in `XDG_RUNTIME_DIR` when it starts without `DISPLAY` or `WAYLAND_DISPLAY`, instead of guessing `DISPLAY=:0`. |
 | 2026-11-03 | `29d2816` | The software fan curve smooths the temperature it answers to. Rising moves 30% of the way per tick, falling 50%, and 85 C or more is used as it is. A one-second CPU boost no longer ramps the fans. |
 | 2026-11-03 | `2d939d8` | The PredatorSense key is recognised on the PHN16-71, which reports it as `KEY_PROG1` (148) instead of 425. Other models are unchanged. |
+| 2026-11-23 | `6c24036` | When the app really exits (tray Quit, `kill`, logout), it hands the fans back to the firmware if the software curve had put them in manual PWM mode. Before, they stayed at the last manual speed. A crash still skips this. |
 
 ## What has been verified
 
@@ -25,6 +26,7 @@ kernel 7.1.5, KDE Plasma on Wayland.
 | Hotkey: Wayland socket | yes | Not shown separately from the key code |
 | AC profile default | yes | Config reads `auto_profile_ac: false`; charger plug/unplug not tried |
 | Fan temperature smoothing | yes | Not tried; it only applies with Auto curve switched on |
+| Fans returned to firmware on exit | yes | Not tried yet |
 
 ## Not changed
 
